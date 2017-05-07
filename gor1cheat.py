@@ -42,7 +42,7 @@ class BackpackItem(object):
 			(0x00, 0x00):	"empty",
 			# 0x01..0x05 cause crash
 			(0x06, 0x00):	"brick_wall",
-			(0x07, 0x00):	"electro_fence",
+			(0x07, 0x00):	"electric_fence",
 			(0x08, 0x00):	"computer",
 			(0x09, 0x00):	"isolator",
 			(0x0a, 0x00):	"gold_bar",
@@ -108,7 +108,7 @@ class BackpackItem(object):
 			(0x22, 0x01):	"electrode_right",
 			(0x23, 0x00):	"electro_beam_horiz",
 			(0x24, 0x00):	"exclamation_mark",
-			(0x25, 0x00):	"nothing ?",
+			(0x25, 0x00):	"letter",
 			(0x26, 0x00):	"black_wall",
 			(0x27, 0x00):	"thick_cable_left",
 			(0x28, 0x00):	"blaumann",
@@ -158,6 +158,22 @@ class BackpackItem(object):
 		return str(self)
 
 	@property
+	def char(self):
+		text = str(self)
+		return {
+			"empty":					"  ",
+			"brick_wall":				"##",
+			"black_wall":				"##",
+			"exit":						"<-",
+			"electric_fence":			"~~",
+			"isolator":					"{}",
+			"gold_bar":					"^ ",
+			"arrow_up":					"->",
+			"door_generic_black (0)":	".-",
+			"letter":					"A ",
+		}.get(text, text[:2])
+
+	@property
 	def is_empty(self):
 		return (self._data[0] == 0x00) and (self._data[1] == 0x00)
 
@@ -184,62 +200,102 @@ class BackpackItem(object):
 		else:
 			return "Unknown<%02x %02x>" % (item_id[0], item_id[1])
 
-class SceneData(object):
+class Room(object):
 	_ROOM_WIDTH = 40
 	_ROOM_HEIGHT = 28
 
-	def __init__(self, data):
-		self._room = ""
-		self._parse(data)
+	def __init__(self, room_id, data):
+		self._room_id = room_id
+		self._data = data
+		self._offset = 0
+		self._parse()
 
-	def _room_layout(self, count, block):
-		print("%d x %s" % (count, block))
-		if block.is_empty:
-			self._room += (" " * count)
-		else:
-			self._room += (str(block)[0] * count)
+	def _room_layout(self, at_offset, count, block):
+#		print("0x%x: %d x %s" % (at_offset, count, block))
+		self._room += [ block for i in range(count) ]
 
 	def _print_room(self):
-		print(len(self._room))
 		for i in range(0, len(self._room), self._ROOM_WIDTH):
-			print(self._room[i : i + self._ROOM_WIDTH])
+			print("".join(block.char for block in self._room[i : i + self._ROOM_WIDTH]))
 
-	def _parse(self, data):
-		print("ROOM", data[:4])
-		offset = 4
-		filepart = 0
-		while offset < len(data):
-			cmd = data[offset]
-#			print("%4x: %02x" % (offset, cmd))
+	def _end_room(self):
+		padding = self._ROOM_WIDTH - (len(self._room) % self._ROOM_WIDTH)
+		self._room += " " * padding
+		self._room += "*" * self._ROOM_WIDTH
+
+	def _parse_room(self):
+		self._room = [ ]
+		while len(self._room) < (self._ROOM_WIDTH * self._ROOM_HEIGHT):
+			cmd = self._data[self._offset]
 			if cmd < 0x80:
 				block = BackpackItem.new_by_id(cmd, 0)
-				offset += 1
-				self._room_layout(1, block)
+				self._room_layout(self._offset, 1, block)
+				self._offset += 1
 			elif (0x80 <= cmd <= 0xa8):
 				count = cmd - 0x80
-				block_no = data[offset + 1]
+				block_no = self._data[self._offset + 1]
 				block = BackpackItem.new_by_id(block_no, 0)
-				offset += 2
-				self._room_layout(count, block)
+				self._room_layout(self._offset, count, block)
+				self._offset += 2
 			elif (0xa9 <= cmd <= 0xee) or (cmd == 0xd1):
 				count = cmd - 0xa8
-				block_no = data[offset + 1]
+				block_no = self._data[self._offset + 1]
 				block = BackpackItem.new_by_id(block_no, 0)
-				offset += 2
-				self._room_layout(count, block)
+				self._room_layout(self._offset, count, block)
+				self._offset += 2
 			elif cmd == 0xff:
-				offset += 1
-				filepart = (filepart + 1) % 3
-			elif cmd == 0xee:
-				offset += 5
-				print("???")
+				print("Parsing aborted by 0xff at room offset 0x%x" % (self._offset))
+				print("%x %x %x" % (self._data[self._offset], self._data[self._offset + 1], self._data[self._offset + 2]))
+				self._offset += 1
+				break
 			else:
 				self._print_room()
 				print("Part %d: %x" % (filepart, cmd))
 				HexDump().dump(data[offset:])
 				raise Exception("?")
-		# 81 sub_id x y
+
+	def _parse(self):
+		self._parse_room()
 		self._print_room()
+
+class SceneData(object):
+	def __init__(self, data, base_offset = 0):
+		self._room = None
+		self._data = data
+		self._offset = 0
+		self._base_offset = base_offset
+		self._parse()
+
+	def _parse_room_header(self):
+		room_id = self._data[self._offset]
+		length = self._data[self._offset + 2] | (self._data[self._offset + 3] << 8)
+		return (room_id, length)
+
+	def _parse(self):
+		self._offset = 0
+		room_cnt = 0
+		while self._offset < len(self._data):
+			(room_id, room_length) = self._parse_room_header()
+			print("Room %d (ID 0x%d) at 0x%x length 0x%x" % (room_cnt, room_id, self._offset + self._base_offset, room_length))
+			room_data = self._data[self._offset + 4 : self._offset + 4 + room_length]
+			room = Room(room_id, room_data)
+			HexDump().dump(room_data)
+			self._offset += room_length + 2
+
+
+
+#			if room_id == 0:
+#				self._offset += length - 4
+#				continue
+#			print("Parsing major room data of %d at 0x%x" % (room_id, self._base_offset + self._offset))
+#			self._parse_room()
+#			self._print_room()
+#			print("Parsing minor room data at 0x%x" % (self._base_offset + self._offset))
+#			self._parse_room()
+#			self._print_room()
+#			print("Skipping constant room data at 0x%x" % (self._base_offset + self._offset))
+#			self._offset += 36
+#			room_id += 1
 
 class Robot1Cheat(object):
 	_Position = collections.namedtuple("Position", [ "x", "y", "scene", "prev_scene" ])
@@ -254,11 +310,11 @@ class Robot1Cheat(object):
 		"pos_y":			0xb7,
 		"current_scene":	0xa6,
 		"previous_scene":	0xa0,
-#		"scene_data":		0x126,
-		"scene_data":		0x307,
+		"scene_data":		0x126,
+#		"scene_data":		0x472,
 	}
 	_BACKPACK_ITEM_SIZE = 2
-	_MAX_BACKPACK_ITEMS = 20
+	_MAX_BACKPACK_ITEMS = 50
 
 	def __init__(self, infile):
 		with open(infile, "rb") as f:
@@ -331,8 +387,8 @@ class Robot1Cheat(object):
 		self.put_backpack(index, BackpackItem.new_by_name(item_name))
 
 	def scene_data(self):
-		scene_data = SceneData(self._data[self._OFFSETS["scene_data"] : ])
-		scene_data.dump()
+		scene_offset = self._OFFSETS["scene_data"]
+		scene_data = SceneData(self._data[scene_offset : ], base_offset = scene_offset)
 
 	def hexedit(self, background_write_filename = None):
 		with open("tempfile.tmp", "wb") as f:
@@ -370,6 +426,6 @@ if args.verbose:
 	print("Gold    : %d" % (savefile.gold))
 	print("Score   : %d" % (savefile.score))
 	print(savefile.get_backpack())
-	#savefile.scene_data()
+	savefile.scene_data()
 savefile.write(args.outfile or args.infile)
 
