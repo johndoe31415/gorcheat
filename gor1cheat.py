@@ -148,6 +148,7 @@ class BackpackItem(object):
 			(0x4a, 0x00):	"???",
 			(0x4b, 0x00):	"???",
 			# All from 0x4c seem to be regarded as empty
+			(0x7f, 0x00):	"teleporter",
 	}
 	_REV_ITEM_IDS = { y: x for (x, y) in _ITEM_IDS.items() }
 
@@ -202,7 +203,7 @@ class BackpackItem(object):
 
 class Room(object):
 	_ROOM_WIDTH = 40
-	_ROOM_HEIGHT = 28
+	_ROOM_HEIGHT = 29
 
 	def __init__(self, room_id, data):
 		self._room_id = room_id
@@ -211,12 +212,21 @@ class Room(object):
 		self._parse()
 
 	def _room_layout(self, at_offset, count, block):
-#		print("0x%x: %d x %s" % (at_offset, count, block))
+		cmd = self._data[at_offset]
+		print("0x%x [%02x]: %d x %s" % (at_offset, cmd, count, block))
 		self._room += [ block for i in range(count) ]
 
-	def _print_room(self):
+	def _subindex_layout(self, at_offset, count, subindex):
+		cmd = self._data[at_offset]
+		new_len = len(self._subindices) + count
+		print("0x%x [%02x]: %d x 0x%x (then %d [%d, %d])" % (at_offset, cmd, count, subindex, new_len, new_len % self._ROOM_WIDTH, new_len // self._ROOM_WIDTH))
+		self._subindices += [ subindex for i in range(count) ]
+
+	def dump(self):
+		print("Room ID 0x%x len %d (missing: %d)" % ((self._room_id, len(self._room), (self._ROOM_WIDTH * self._ROOM_HEIGHT) - len(self._room))))
 		for i in range(0, len(self._room), self._ROOM_WIDTH):
-			print("".join(block.char for block in self._room[i : i + self._ROOM_WIDTH]))
+#			print("".join(block.char for block in self._room[i : i + self._ROOM_WIDTH]))
+			print("".join(block.char + "%-2x" % (self._subindices[i + j]) for (j, block) in enumerate(self._room[i : i + self._ROOM_WIDTH])))
 
 	def _end_room(self):
 		padding = self._ROOM_WIDTH - (len(self._room) % self._ROOM_WIDTH)
@@ -231,32 +241,38 @@ class Room(object):
 				block = BackpackItem.new_by_id(cmd, 0)
 				self._room_layout(self._offset, 1, block)
 				self._offset += 1
-			elif (0x80 <= cmd <= 0xa8):
+			else:
 				count = cmd - 0x80
 				block_no = self._data[self._offset + 1]
 				block = BackpackItem.new_by_id(block_no, 0)
 				self._room_layout(self._offset, count, block)
 				self._offset += 2
-			elif (0xa9 <= cmd <= 0xee) or (cmd == 0xd1):
-				count = cmd - 0xa8
-				block_no = self._data[self._offset + 1]
-				block = BackpackItem.new_by_id(block_no, 0)
-				self._room_layout(self._offset, count, block)
-				self._offset += 2
-			elif cmd == 0xff:
-				print("Parsing aborted by 0xff at room offset 0x%x" % (self._offset))
-				print("%x %x %x" % (self._data[self._offset], self._data[self._offset + 1], self._data[self._offset + 2]))
+
+	def _parse_subindex_room(self):
+		HexDump().dump(self._data[self._offset:])
+		self._subindices = [ ]
+		while len(self._subindices) < (self._ROOM_WIDTH * self._ROOM_HEIGHT):
+			cmd = self._data[self._offset]
+			if cmd < 0x80:
+				self._subindex_layout(self._offset, 1, cmd)
 				self._offset += 1
-				break
+			elif cmd < 0xff:
+				count = cmd - 0x80
+				subindex = self._data[self._offset + 1]
+				self._subindex_layout(self._offset, count, subindex)
+				self._offset += 2
 			else:
-				self._print_room()
-				print("Part %d: %x" % (filepart, cmd))
-				HexDump().dump(data[offset:])
-				raise Exception("?")
+				count = self._data[self._offset + 1] - 0x8a
+				subindex = self._data[self._offset + 2]
+				self._subindex_layout(self._offset, count, subindex)
+				self._offset += 3
+		print("SUBIDx", len(self._subindices))
 
 	def _parse(self):
 		self._parse_room()
-		self._print_room()
+		self._parse_subindex_room()
+#		self._parse_room()
+#		print("REM", len(self._data) - self._offset)
 
 class SceneData(object):
 	def __init__(self, data, base_offset = 0):
@@ -278,24 +294,14 @@ class SceneData(object):
 			(room_id, room_length) = self._parse_room_header()
 			print("Room %d (ID 0x%d) at 0x%x length 0x%x" % (room_cnt, room_id, self._offset + self._base_offset, room_length))
 			room_data = self._data[self._offset + 4 : self._offset + 4 + room_length]
-			room = Room(room_id, room_data)
-			HexDump().dump(room_data)
+
+			if (room_cnt == 1):
+				HexDump().dump(room_data)
+				room = Room(room_id, room_data)
+				room.dump()
+				print("=" * 150)
 			self._offset += room_length + 2
-
-
-
-#			if room_id == 0:
-#				self._offset += length - 4
-#				continue
-#			print("Parsing major room data of %d at 0x%x" % (room_id, self._base_offset + self._offset))
-#			self._parse_room()
-#			self._print_room()
-#			print("Parsing minor room data at 0x%x" % (self._base_offset + self._offset))
-#			self._parse_room()
-#			self._print_room()
-#			print("Skipping constant room data at 0x%x" % (self._base_offset + self._offset))
-#			self._offset += 36
-#			room_id += 1
+			room_cnt += 1
 
 class Robot1Cheat(object):
 	_Position = collections.namedtuple("Position", [ "x", "y", "scene", "prev_scene" ])
