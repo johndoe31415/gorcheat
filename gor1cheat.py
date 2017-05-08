@@ -252,7 +252,10 @@ class Room(object):
 		HexDump().dump(self._data[self._offset:])
 		self._subindices = [ ]
 		while len(self._subindices) < (self._ROOM_WIDTH * self._ROOM_HEIGHT):
-			cmd = self._data[self._offset]
+			try:
+				cmd = self._data[self._offset]
+			except IndexError:
+				break
 			if cmd < 0x80:
 				self._subindex_layout(self._offset, 1, cmd)
 				self._offset += 1
@@ -262,10 +265,12 @@ class Room(object):
 				self._subindex_layout(self._offset, count, subindex)
 				self._offset += 2
 			else:
-				count = self._data[self._offset + 1] - 0x8a
-				subindex = self._data[self._offset + 2]
+				count = 127
+#				count = self._data[self._offset + 1] - 0x8a
+#				count = self._data[self._offset + 1] - 0x8a + 17
+				subindex = 0
 				self._subindex_layout(self._offset, count, subindex)
-				self._offset += 3
+				self._offset += 1
 		print("SUBIDx", len(self._subindices))
 
 	def _parse(self):
@@ -295,7 +300,7 @@ class SceneData(object):
 			print("Room %d (ID 0x%d) at 0x%x length 0x%x" % (room_cnt, room_id, self._offset + self._base_offset, room_length))
 			room_data = self._data[self._offset + 4 : self._offset + 4 + room_length]
 
-			if (room_cnt == 1):
+			if (room_cnt == 1) or True:
 				HexDump().dump(room_data)
 				room = Room(room_id, room_data)
 				room.dump()
